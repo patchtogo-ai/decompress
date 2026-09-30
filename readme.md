@@ -1,3 +1,8 @@
+> [!WARNING]
+> **Unofficial patched fork.** `@patchtogo.ai/decompress` is [`decompress`](https://www.npmjs.com/package/decompress) 4.2.1 with security fixes from [patchtogo](https://patchtogo.ai), under its original licence (MIT).
+> It is not maintained by or affiliated with the upstream authors. The original lives at https://github.com/kevva/decompress; see [PATCHTOGO.md](PATCHTOGO.md) for attribution.
+> Advisories filed against `decompress` don't reach `@patchtogo.ai/decompress` in `npm audit`, so patchtogo publishes [its own security advisories](https://github.com/patchtogo-ai/decompress/security/advisories) for it when a new upstream advisory covers the version it's built from.
+
 # decompress [![Build Status](https://travis-ci.org/kevva/decompress.svg?branch=master)](https://travis-ci.org/kevva/decompress)
 
 > Extracting archives made easy

@@ -1,9 +1,12 @@
 {
-	"name": "decompress",
-	"version": "4.2.1",
+	"name": "@patchtogo.ai/decompress",
+	"version": "4.2.1-ptg.1",
 	"description": "Extracting archives made easy",
 	"license": "MIT",
-	"repository": "kevva/decompress",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/patchtogo-ai/decompress.git"
+	},
 	"author": {
 		"name": "Kevin Mårtensson",
 		"email": "kevinmartensson@gmail.com",
@@ -16,7 +19,8 @@
 		"test": "xo && ava"
 	},
 	"files": [
-		"index.js"
+		"index.js",
+		"PATCHTOGO.md"
 	],
 	"keywords": [
 		"bz2",
@@ -57,5 +61,8 @@
 		"rules": {
 			"promise/prefer-await-to-then": "off"
 		}
+	},
+	"publishConfig": {
+		"access": "public"
 	}
 }

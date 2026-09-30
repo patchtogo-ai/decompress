@@ -1,0 +1,108 @@
+name: patchtogo preview (unreviewed)
+"on":
+  push:
+    branches:
+      - ptg/patch/**
+permissions: {}
+concurrency:
+  group: patchtogo-preview-${{ github.ref }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    if: github.repository == 'patchtogo-ai/decompress'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      CI: "true"
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      COREPACK_ENABLE_STRICT: "0"
+      npm_config_audit: "false"
+      npm_config_fund: "false"
+      npm_config_update_notifier: "false"
+      PTG_PACKAGE_DIR: "."
+      PTG_README: readme.md
+      PTG_BEFORE: "2020-04-01T14:00:54.980Z"
+    steps:
+      - name: Check out the patch commit (actions/checkout v7.0.1)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js (actions/setup-node v7.0.0)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Mark the package as an unreviewed preview
+        run: |-
+          node - <<'PTG_PREVIEW'
+          const fs = require("node:fs")
+          const path = require("node:path")
+          const env = process.env
+          const manifestPath = path.join(env.PTG_PACKAGE_DIR, "package.json")
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+          const short = env.GITHUB_SHA.slice(0, 7)
+          manifest.version += (manifest.version.includes("-") ? "." : "-") + "preview-" + short
+          fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")
+          const commit = env.GITHUB_SERVER_URL + "/" + env.GITHUB_REPOSITORY + "/commit/" + env.GITHUB_SHA
+          const label = manifest.name + "@" + manifest.version
+          const warning = "The patch was written by an AI agent and has not been reviewed yet: use this build only as an emergency stopgap until a reviewed release is published."
+          const banner = /\.(md|markdown)$/i.test(env.PTG_README)
+            ? "> [!CAUTION]\n> **Unreviewed preview.** \x60" + label + "\x60 was built from commit [" + short + "](" + commit + ") of an open patchtogo pull request. " + warning
+            : "UNREVIEWED PREVIEW: " + label + " was built from " + commit + ", a commit of an open patchtogo pull request. " + warning
+          const readme = fs.existsSync(env.PTG_README) ? fs.readFileSync(env.PTG_README, "utf8") : ""
+          fs.writeFileSync(env.PTG_README, banner + "\n\n" + readme)
+          PTG_PREVIEW
+      - name: Build and pack like the tarball check
+        run: |-
+          mkdir -p "$RUNNER_TEMP/preview"
+          set -- "$PTG_PACKAGE_DIR" "$RUNNER_TEMP/preview" "$PTG_BEFORE"
+          set -euo pipefail
+          package_dir="$1"; pack_dir="$2"; before="$3"
+          if [ -f pnpm-lock.yaml ]; then
+            corepack pnpm install --no-frozen-lockfile
+            cd "$package_dir"
+            corepack pnpm run --if-present build
+            corepack pnpm pack --pack-destination "$pack_dir"
+          else
+            if [ -f yarn.lock ]; then
+              corepack yarn install
+            elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ] || [ -z "$before" ]; then
+              npm install
+            else
+              npm install --before="$before"
+            fi
+            cd "$package_dir"
+            npm run build --if-present
+            npm pack --pack-destination "$pack_dir"
+          fi
+      - name: Keep the tarball (actions/upload-artifact v7.0.1)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: preview
+          path: ${{ runner.temp }}/preview/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    if: github.repository == 'patchtogo-ai/decompress'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Set up Node.js (actions/setup-node v7.0.0)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Fetch the tarball (actions/download-artifact v8.0.1)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: preview
+          path: preview
+      - name: Publish the preview to pkg.pr.new
+        run: npx --yes pkg-pr-new@0.0.88 publish --no-compact --no-template --comment=update --commentWithSha ./preview/*.tgz
