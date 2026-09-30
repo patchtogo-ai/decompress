@@ -10,6 +10,8 @@ const pify = require('pify');
 const stripDirs = require('strip-dirs');
 
 const fsP = pify(fs);
+// The non-native realpath normalizes `..` lexically before resolving symlinks, which can be abused to escape
+const realpath = fs.realpath.native ? pify(fs.realpath.native) : fsP.realpath;
 
 const runPlugins = (input, opts) => {
 	if (opts.plugins.length === 0) {
@@ -19,18 +21,42 @@ const runPlugins = (input, opts) => {
 	return Promise.all(opts.plugins.map(x => x(input, opts))).then(files => files.reduce((a, b) => a.concat(b)));
 };
 
+const isInside = (realOutputPath, p) => {
+	const prefix = realOutputPath.endsWith(path.sep) ? realOutputPath : realOutputPath + path.sep;
+	return p === realOutputPath || p.indexOf(prefix) === 0;
+};
+
+// Resolve a link target that may not exist yet: realpath the deepest existing ancestor and append the rest.
+// A `..` after a missing component could later be redirected by another symlink, so it is refused.
+const resolveTarget = target => {
+	return realpath(target)
+		.catch(error => {
+			const parent = path.dirname(target);
+
+			if (parent === target) {
+				throw error;
+			}
+
+			if (path.basename(target) === '..') {
+				throw new Error('Refusing to create a link through a missing path: ' + target);
+			}
+
+			return resolveTarget(parent).then(realParent => path.join(realParent, path.basename(target)));
+		});
+};
+
 const safeMakeDir = (dir, realOutputPath) => {
-	return fsP.realpath(dir)
+	return realpath(dir)
 		.catch(_ => {
 			const parent = path.dirname(dir);
 			return safeMakeDir(parent, realOutputPath);
 		})
 		.then(realParentPath => {
-			if (realParentPath.indexOf(realOutputPath) !== 0) {
+			if (!isInside(realOutputPath, realParentPath)) {
 				throw (new Error('Refusing to create a directory outside the output path.'));
 			}
 
-			return makeDir(dir).then(fsP.realpath);
+			return makeDir(dir).then(realpath);
 		});
 };
 
@@ -73,21 +99,25 @@ const extractFile = (input, output, opts) => runPlugins(input, opts).then(files 
 		return files;
 	}
 
-	return Promise.all(files.map(x => {
+	const extracted = [];
+
+	return files.reduce((previous, x) => previous.then(() => {
 		const dest = path.join(output, x.path);
 		const mode = x.mode & ~process.umask();
 		const now = new Date();
 
 		if (x.type === 'directory') {
 			return makeDir(output)
-				.then(outputPath => fsP.realpath(outputPath))
+				.then(outputPath => realpath(outputPath))
 				.then(realOutputPath => safeMakeDir(dest, realOutputPath))
 				.then(() => fsP.utimes(dest, now, x.mtime))
 				.then(() => x);
 		}
 
+		let linkTarget;
+
 		return makeDir(output)
-			.then(outputPath => fsP.realpath(outputPath))
+			.then(outputPath => realpath(outputPath))
 			.then(realOutputPath => {
 				// Attempt to ensure parent directory exists (failing if it's outside the output dir)
 				return safeMakeDir(path.dirname(dest), realOutputPath)
@@ -101,20 +131,38 @@ const extractFile = (input, output, opts) => runPlugins(input, opts).then(files 
 				return realOutputPath;
 			})
 			.then(realOutputPath => {
-				return fsP.realpath(path.dirname(dest))
+				return realpath(path.dirname(dest))
 					.then(realDestinationDir => {
-						if (realDestinationDir.indexOf(realOutputPath) !== 0) {
+						if (!isInside(realOutputPath, realDestinationDir)) {
 							throw (new Error('Refusing to write outside output directory: ' + realDestinationDir));
 						}
+
+						if (x.type !== 'link' && x.type !== 'symlink') {
+							return;
+						}
+
+						// Hardlink targets are relative to the output directory, symlink targets to the link's directory
+						const base = x.type === 'link' ? realOutputPath : realDestinationDir;
+						const lexicalTarget = path.resolve(base, x.linkname);
+						const rawTarget = path.isAbsolute(x.linkname) ? x.linkname : base + path.sep + x.linkname;
+
+						return resolveTarget(rawTarget)
+							.then(realTarget => {
+								if (!isInside(realOutputPath, lexicalTarget) || !isInside(realOutputPath, realTarget)) {
+									throw (new Error('Refusing to create a link outside the output directory: ' + x.linkname));
+								}
+
+								linkTarget = lexicalTarget;
+							});
 					});
 			})
 			.then(() => {
 				if (x.type === 'link') {
-					return fsP.link(x.linkname, dest);
+					return fsP.link(linkTarget, dest);
 				}
 
 				if (x.type === 'symlink' && process.platform === 'win32') {
-					return fsP.link(x.linkname, dest);
+					return fsP.link(linkTarget, dest);
 				}
 
 				if (x.type === 'symlink') {
@@ -125,7 +173,9 @@ const extractFile = (input, output, opts) => runPlugins(input, opts).then(files 
 			})
 			.then(() => x.type === 'file' && fsP.utimes(dest, now, x.mtime))
 			.then(() => x);
-	}));
+	}).then(entry => {
+		extracted.push(entry);
+	}), Promise.resolve()).then(() => extracted);
 });
 
 module.exports = (input, output, opts) => {
